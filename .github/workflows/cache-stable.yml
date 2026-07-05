@@ -1,11 +1,13 @@
 name: Cache PHP for stable versions
+run-name: Cache for PHP ${{ inputs['php-version'] || '8.5' }}
 on:
   workflow_dispatch:
     inputs:
-      php-versions:
+      php-version:
         description: 'PHP version to build'
-        default: '5.6 7.0 7.1 7.2 7.3 7.4 8.0 8.1 8.2 8.3 8.4 8.5'
-        required: false
+        default: '8.5'
+        required: true
+        type: string
       builds:
         description: 'Build type'
         default: 'debug release'
@@ -20,7 +22,7 @@ on:
         required: false
 
 env:
-  PHP_VERSIONS: '5.6 7.0 7.1 7.2 7.3 7.4 8.0 8.1 8.2 8.3 8.4 8.5'
+  PHP_VERSION: '8.5'
   BUILDS: 'debug release'
   TS: 'nts zts'
   CONTAINERS: 'ubuntu:26.04 ubuntu:24.04 ubuntu:22.04 arm64v8/ubuntu:22.04 arm64v8/ubuntu:24.04 arm64v8/ubuntu:26.04'
@@ -40,7 +42,7 @@ jobs:
         id: get-matrix
         run: bash scripts/get-matrix.sh
         env:
-          PHP_VERSIONS: ${{ inputs.php-versions || env.PHP_VERSIONS }}
+          PHP_VERSION: ${{ inputs['php-version'] || env.PHP_VERSION }}
           BUILDS: ${{ inputs.builds || env.BUILDS }}
           TS: ${{ inputs.ts || env.TS }}
           CONTAINERS: ${{ inputs.containers || env.CONTAINERS }}
@@ -61,7 +63,7 @@ jobs:
       - name: Install requirements
         run: bash scripts/install-requirements.sh
         env:
-          PHP_VERSION: ${{ matrix.php-versions }}
+          PHP_VERSION: ${{ matrix.php }}
           BUILDS: ${{ matrix.builds }}
           NIGHTLY: 'false'
           TS: ${{ matrix.ts }}
@@ -79,12 +81,12 @@ jobs:
           ZSTD_DIR: ${{ steps.zstd.outputs.ZSTD_DIR }}
         run: bash scripts/install-zstd.sh
 
-      - name: Configure git
-        run: bash scripts/configure-git.sh
+      - name: Capture filesystem snapshot
+        run: bash scripts/configure-filesystem-snapshot.sh
 
       - name: Setup PHP
         env:
-          PHP_VERSION: ${{ matrix.php-versions }}
+          PHP_VERSION: ${{ matrix.php }}
           BUILDS: ${{ matrix.builds }}
           NIGHTLY: 'false'
           TS: ${{ matrix.ts }}
@@ -93,7 +95,7 @@ jobs:
       - name: Build package
         env:
           GITHUB_WORKSPACE: ${{ github.workspace }}
-          PHP_VERSION: ${{ matrix.php-versions }}
+          PHP_VERSION: ${{ matrix.php }}
           BUILDS: ${{ matrix.builds }}
           TS: ${{ matrix.ts }}
         run: bash scripts/package-php.sh
@@ -101,7 +103,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-${{ matrix.php-versions }}-${{ matrix.builds }}-${{ matrix.ts }}
+          name: ${{ matrix.os }}-${{ matrix.php }}-${{ matrix.builds }}-${{ matrix.ts }}
           path: builds
   tests:
     runs-on: ${{ matrix.os }}
@@ -117,49 +119,49 @@ jobs:
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ matrix.os }}-${{ matrix.php-versions }}-${{ matrix.builds }}-${{ matrix.ts }}
+          name: ${{ matrix.os }}-${{ matrix.php }}-${{ matrix.builds }}-${{ matrix.ts }}
           path: /tmp
 
       - name: Patch script
         run: sed -i -e '/releases/d' -e '/^\s*fix_packages\s*$/d' -e '1s/$/\n\nset -x/' scripts/install.sh
 
       - name: Setup PHP
-        run: bash scripts/install.sh ${{ matrix.php-versions }} ${{ matrix.builds }} ${{ matrix.ts }}
+        run: bash scripts/install.sh ${{ matrix.php }} ${{ matrix.builds }} ${{ matrix.ts }}
 
       - name: Switch versions
         run: |
-          sudo update-alternatives --set php-cgi-bin /usr/lib/cgi-bin/php${{ matrix.php-versions }}
-          sudo update-alternatives --set php-fpm /usr/sbin/php-fpm${{ matrix.php-versions }}
-          sudo update-alternatives --set php-fpm.sock /run/php/php${{ matrix.php-versions }}-fpm.sock
+          sudo update-alternatives --set php-cgi-bin /usr/lib/cgi-bin/php${{ matrix.php }}
+          sudo update-alternatives --set php-fpm /usr/sbin/php-fpm${{ matrix.php }}
+          sudo update-alternatives --set php-fpm.sock /run/php/php${{ matrix.php }}-fpm.sock
           for tool in phpize php-config phpdbg php-cgi php phar.phar phar; do
-            sudo update-alternatives --set "$tool" /usr/bin/"$tool"${{ matrix.php-versions }}
+            sudo update-alternatives --set "$tool" /usr/bin/"$tool"${{ matrix.php }}
           done
 
       - name: Test PHP
         run: |
-          file /usr/bin/php${{ matrix.php-versions }}
+          file /usr/bin/php${{ matrix.php }}
           php -v
           php-config --version
           php-fpm -v
           php-cgi -v
           phpize -v
           php -m
-          sudo service php${{ matrix.php-versions }}-fpm status || exit 1
-          php -v | grep -q '${{ matrix.php-versions }}' || exit 1
-          php-config --version | grep -q '${{ matrix.php-versions }}' || exit 1
+          sudo service php${{ matrix.php }}-fpm status || exit 1
+          php -v | grep -q '${{ matrix.php }}' || exit 1
+          php-config --version | grep -q '${{ matrix.php }}' || exit 1
           phpize -v | grep -q "$(php-config --phpapi)" || exit 1
-          php-fpm -v | grep -q '${{ matrix.php-versions }}' || exit 1
-          php-cgi -v | grep -q '${{ matrix.php-versions }}' || exit 1          
+          php-fpm -v | grep -q '${{ matrix.php }}' || exit 1
+          php-cgi -v | grep -q '${{ matrix.php }}' || exit 1
 
-      - name: Test optional extensions
+      - name: Test shared extensions
         run: bash scripts/test-optional-extensions.sh
         env:
-          PHP_VERSION: ${{ matrix.php-versions }}
+          PHP_VERSION: ${{ matrix.php }}
 
       - name: Test broken packages
         run: |
-          bash scripts/check-test-packages.sh "${{ matrix.php-versions }}" "${{ matrix.os }}" success success
-          source "reports/${{ matrix.php-versions }}-${{ matrix.os }}.env"
+          bash scripts/check-test-packages.sh "${{ matrix.php }}" "${{ matrix.os }}" success success
+          source "reports/${{ matrix.php }}-${{ matrix.os }}.env"
           [ "$broken" != true ]
   release:
     runs-on: ubuntu-latest

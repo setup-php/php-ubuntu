@@ -169,7 +169,7 @@ awk -F '\t' '
 
 while IFS=$'\t' read -r php_version workflow containers; do
   echo "Dispatching $workflow for PHP $php_version on containers: $containers"
-  gh workflow run "$workflow" --repo "${REPO:?}" --ref "${REF:?}" -f php-versions="$php_version" -f containers="$containers"
+  gh workflow run "$workflow" --repo "${REPO:?}" --ref "${REF:?}" -f php-version="$php_version" -f containers="$containers"
   echo "| $php_version | $workflow | $containers |" | append_summary
 done < "$grouped_dispatch_file"
 

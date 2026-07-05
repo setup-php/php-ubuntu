@@ -54,6 +54,7 @@ jobs:
           phpize -v | grep -q "$(php-config --phpapi)"
           php-fpm -v | grep -q '${{ matrix.php }}'
           php-cgi -v | grep -q '${{ matrix.php }}'
+          PHP_VERSION=${{ matrix.php }} bash scripts/test-optional-extensions.sh
 
       - name: Check broken packages
         id: packages

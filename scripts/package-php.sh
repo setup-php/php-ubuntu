@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 cd / || exit 1
 [ "${BUILDS:?}" = "debug" ] && PHP_PKG_SUFFIX=-dbgsym
+
+# shellcheck source=scripts/filesystem-snapshot.sh
+. "$script_dir/filesystem-snapshot.sh"
 
 remove_extension_debug_symbols() {
   extension=$1
@@ -51,26 +56,51 @@ remove_dev_artifacts() {
   sudo find /tmp/php -type f \( -name '*.a' -o -name '*.gir' \) -delete
 }
 
+package_matches_patterns() {
+  local package pattern patterns_file
+
+  package=$1
+  patterns_file=$2
+
+  [ -f "$patterns_file" ] || return 1
+
+  while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    # shellcheck disable=SC2053
+    [[ $package == $pattern ]] && return 0
+  done < "$patterns_file"
+
+  return 1
+}
+
+write_excluded_package_files() {
+  local output package tmp_files
+
+  output=$1
+  tmp_files="$(mktemp)"
+
+  if [ -f /tmp/excluded ]; then
+    dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | while IFS= read -r package; do
+      [ -n "$package" ] || continue
+      package_matches_patterns "$package" /tmp/excluded || continue
+
+      dpkg-query -L "$package" 2>/dev/null
+      find /var/lib/dpkg/info -maxdepth 1 \( -name "$package.*" -o -name "$package:*" \) -print 2>/dev/null
+    done > "$tmp_files"
+  fi
+
+  LC_ALL=C sort -u "$tmp_files" > "$output"
+  rm -f "$tmp_files"
+}
+
 remove_excluded_package_files() {
-  excluded_file="${GITHUB_WORKSPACE:-}"/scripts/excluded
+  excluded_file=/tmp/excluded
 
   [ -f "$excluded_file" ] || return 0
 
-  is_excluded_package() {
-    package=$1
-
-    while IFS= read -r pattern; do
-      [ -n "$pattern" ] || continue
-      # shellcheck disable=SC2053
-      [[ $package == $pattern ]] && return 0
-    done < "$excluded_file"
-
-    return 1
-  }
-
   dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | while IFS= read -r package; do
     [ -n "$package" ] || continue
-    is_excluded_package "$package" || continue
+    package_matches_patterns "$package" "$excluded_file" || continue
 
     dpkg-query -L "$package" 2>/dev/null | while IFS= read -r file; do
       cached_file="/tmp/php$file"
@@ -92,6 +122,108 @@ copy_package_info() {
   sudo cp -a /var/lib/dpkg/info/"$package":* /tmp/php/var/lib/dpkg/info/ 2>/dev/null || true
 }
 
+copy_cache_path() {
+  local file
+
+  file=$1
+
+  if [ -d "$file" ] && ! [ -L "$file" ]; then
+    sudo mkdir -p /tmp/php"$file"
+    return 0
+  fi
+
+  [ -e "$file" ] || [ -L "$file" ] || return 0
+
+  sudo mkdir -p /tmp/php"$(dirname "$file")"
+  if [ -f "$file" ]; then
+    sudo cp -a -l --parents "$file" /tmp/php 2>/dev/null || sudo cp -a --parents "$file" /tmp/php || true
+  else
+    sudo cp -a --parents "$file" /tmp/php || true
+  fi
+}
+
+copy_package_files() {
+  local file package
+  package=$1
+
+  copy_package_info "$package"
+  dpkg -L "$package" 2>/dev/null | while IFS= read -r file; do
+    copy_cache_path "$file"
+  done
+}
+
+copy_required_package_files() {
+  local package
+
+  while IFS= read -r package; do
+    [ -n "$package" ] && copy_package_files "$package"
+  done < /tmp/required
+}
+
+copy_changed_files() {
+  local after_file before_file changed_file copy_file excluded_file file
+
+  before_file=/tmp/php-ubuntu-before-files
+  after_file="$(mktemp)"
+  changed_file="$(mktemp)"
+  excluded_file="$(mktemp)"
+  copy_file="$(mktemp)"
+
+  write_filesystem_manifest "$after_file"
+  if [ -f "$before_file" ]; then
+    comm -13 "$before_file" "$after_file" | cut -f 1 > "$changed_file"
+  else
+    cut -f 1 "$after_file" > "$changed_file"
+  fi
+  LC_ALL=C sort -u "$changed_file" -o "$changed_file"
+  write_excluded_package_files "$excluded_file"
+  comm -23 "$changed_file" "$excluded_file" > "$copy_file"
+
+  sudo mkdir -p /tmp/php
+  while IFS= read -r file; do
+    copy_cache_path "$file"
+  done < "$copy_file"
+
+  rm -f "$after_file" "$changed_file" "$excluded_file" "$copy_file"
+}
+
+rules_source_for_php_source() {
+  case "$1" in
+    packages)
+      echo ondrej
+      ;;
+    php-builder)
+      echo php-builder
+      ;;
+    *)
+      echo "$1"
+      ;;
+  esac
+}
+
+write_package_patterns() {
+  local arch base_file list_dir list_file output rules_source tmp_list type
+
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  type=$1
+  output=$2
+  base_file="${3:-}"
+  arch="$(dpkg --print-architecture)"
+  rules_source="$(rules_source_for_php_source "$source")"
+  list_dir="$GITHUB_WORKSPACE"/scripts/"$type".d/"$rules_source"
+  tmp_list="$(mktemp)"
+
+  [ -n "$base_file" ] && [ -f "$base_file" ] && cat "$base_file" >> "$tmp_list"
+
+  for list_file in "$list_dir"/ubuntu-"$VERSION_ID" "$list_dir"/ubuntu-"$VERSION_ID"-"$arch"; do
+    [ -f "$list_file" ] && cat "$list_file" >> "$tmp_list"
+  done
+
+  sort -u "$tmp_list" | sudo tee "$output" >/dev/null
+  rm -f "$tmp_list"
+}
+
 optimize_package() {
   remove_excluded_package_files
   remove_optional_extension_debug_symbols
@@ -108,25 +240,15 @@ cache_fpm_socket_placeholder() {
 cache_fpm_socket_placeholder
 source=packages
 [ -s /tmp/php-ubuntu-source ] && source="$(cat /tmp/php-ubuntu-source)"
-ls -la /
-for dir_path in /bin /lib /lib64 /sbin /usr /var /run/php; do
-  [ -d "$dir_path" ] && git add "$dir_path"
-done
-find /etc -maxdepth 1 -mindepth 1 -type d -exec git add {} \;
-git commit -m "installed php"
-mkdir -p /tmp/php/etc/apt/sources.list.d /tmp/php/etc/apt/trusted.gpg.d /tmp/php/var/lib/apt/lists /tmp/php/usr/share/keyrings
-for file in $(git log -p -n 1 --name-only | sed 's/^.*\(\s\).*$/\1/' | xargs -L1 echo); do
-  if [ -e "$file" ]; then
-    sudo cp -r -p --parents "$file" /tmp/php || true
-  fi
-done
-lib_subdir="$(uname -m)-linux-gnu"
+sudo apt-get clean || true
+sudo rm -rf /var/cache/apt/archives/*.deb /var/cache/apt/archives/*.ddeb
+sudo rm -f /tmp/php_"$PHP_VERSION$PHP_PKG_SUFFIX"+*.tar.zst
+write_package_patterns required /tmp/required
+write_package_patterns excluded /tmp/excluded "$GITHUB_WORKSPACE"/scripts/excluded
+copy_changed_files
+sudo mkdir -p /tmp/php/etc/apt/sources.list.d /tmp/php/etc/apt/trusted.gpg.d /tmp/php/var/lib/apt/lists /tmp/php/usr/share/keyrings
 sudo touch /var/lib/dpkg/status-diff
-required_file="$GITHUB_WORKSPACE"/scripts/required
-[ "$source" = "php-builder" ] && required_file="$GITHUB_WORKSPACE"/scripts/required-php-builder
-sudo cp "$required_file" /tmp/required
-sudo cp "$GITHUB_WORKSPACE"/scripts/excluded /tmp/excluded
-[ "$source" = "packages" ] && copy_package_info libpcre3
+copy_required_package_files
 sudo LC_ALL=C.UTF-8 python3 "$GITHUB_WORKSPACE"/scripts/create_status.py
 sudo mkdir -p /tmp/php/usr/sbin /tmp/php/var/lib/dpkg/
 sudo cp /var/lib/dpkg/status-diff /tmp/php/var/lib/dpkg/
@@ -136,15 +258,13 @@ if [ "$source" = "packages" ]; then
   sudo cp /etc/apt/sources.list.d/ondrej* /tmp/php/etc/apt/sources.list.d/
   sudo cp /etc/apt/trusted.gpg.d/ondrej* /tmp/php/etc/apt/trusted.gpg.d/
   sudo cp /var/lib/apt/lists/*ondrej* /tmp/php/var/lib/apt/lists/
-  sudo cp -a /usr/lib/"$lib_subdir"/libpcre* /tmp/php/usr/lib/"$lib_subdir"/
-  sudo cp -a /lib/"$lib_subdir"/libpcre* /tmp/php/usr/lib/"$lib_subdir"/
   sudo cp -a /usr/share/keyrings/ondrej-php-keyring.gpg /tmp/php/usr/share/keyrings/ondrej-php-keyring.gpg
 fi
 sudo rm -rf /tmp/php/var/lib/dpkg/alternatives/* /tmp/php/var/lib/dpkg/status-old /tmp/php/var/lib/dpkg/status-orig
 optimize_package
 # shellcheck disable=SC1091
 . /etc/os-release
-SEMVER="$(php -v | head -n 1 | cut -f 2 -d ' ' | cut -f 1 -d '-')"
+SEMVER="$(php-config --version | cut -f 1 -d '-')"
 arch="$(arch)"
 [[ "$arch" = "aarch64" || "$arch" = "arm64" ]] && ARCH_SUFFIX='_arm64' || ARCH_SUFFIX=''
 build_path=/tmp/php_"$PHP_VERSION-$TS$PHP_PKG_SUFFIX"+ubuntu"$VERSION_ID$ARCH_SUFFIX".tar.zst
@@ -152,7 +272,7 @@ semver_build_path=/tmp/php_"$SEMVER-$TS$PHP_PKG_SUFFIX"+ubuntu"$VERSION_ID$ARCH_
 (
   cd /tmp/php || exit 1
   sudo tar cf - ./* | zstd -22 -T0 --ultra > "$build_path"
-  cp "$build_path" "$semver_build_path"
+  ln "$build_path" "$semver_build_path" || cp "$build_path" "$semver_build_path"
 )
 cd "$GITHUB_WORKSPACE" || exit 1
 mkdir builds

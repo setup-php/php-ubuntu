@@ -5,10 +5,12 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y libblkid-dev libcurl4-openssl-
 curl -o /tmp/install.sh -sL "https://github.com/shivammathur/php-builder/releases/download/$PHP_VERSION/install.sh"
 bash /tmp/install.sh github "$PHP_VERSION" "${BUILDS:?}" "${TS:?}"
 
+# shellcheck source=/dev/null
 . /etc/os-release
+# shellcheck disable=SC1091
 . ./scripts/packages.sh
 if [ "$VERSION_ID" = '24.04' ] || [ "$VERSION_ID" = '26.04' ]; then
-  purge_packages libbz2-dev libcairo2-dev libdav1d-dev libfontconfig-dev libfreetype-dev libgdk-pixbuf-2.0-dev libheif-dev libmagickcore-dev libmagickcore-6.q16-dev libwmf-dev libxpm-dev
+  purge_packages libbz2-dev libcairo2-dev libdav1d-dev libfontconfig-dev libfreetype-dev libgdk-pixbuf-2.0-dev libheif-dev libmagickcore-dev libmagickcore-6.q16-dev libwmf-dev libxpm-dev libxt-dev
   add_packages libheif-plugin-libde265
 fi
 dev_only_packages=(
