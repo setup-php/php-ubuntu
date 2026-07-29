@@ -10,6 +10,7 @@ libmcrypt4
 librdkafka1
 librrd8
 libsmbclient
+libwbclient0
 libxmlrpc-epi0
 libyuv0
 samba-libs
