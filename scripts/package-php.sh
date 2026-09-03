@@ -57,9 +57,10 @@ remove_dev_artifacts() {
 }
 
 package_matches_patterns() {
-  local package pattern patterns_file
+  local package package_name pattern patterns_file
 
   package=$1
+  package_name=${package%%:*}
   patterns_file=$2
 
   [ -f "$patterns_file" ] || return 1
@@ -67,7 +68,7 @@ package_matches_patterns() {
   while IFS= read -r pattern; do
     [ -n "$pattern" ] || continue
     # shellcheck disable=SC2053
-    [[ $package == $pattern ]] && return 0
+    [[ $package == $pattern || $package_name == $pattern ]] && return 0
   done < "$patterns_file"
 
   return 1
