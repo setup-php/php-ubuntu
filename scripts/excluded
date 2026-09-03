@@ -45,3 +45,4 @@ libpng*
 libtiff*
 libuuid*
 uuid-dev
+zlib1g-dev
